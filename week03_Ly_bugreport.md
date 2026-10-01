@@ -1,0 +1,173 @@
+# Week 03 Bug Report – Quantum Harmonic Oscillator
+
+**File reviewed:** `ai_generated_oscillator.py` 
+**Name:** Thanh Ly
+**Date:** September 30, 2026
+
+---
+
+## Part 1 — Observations (script run as-is, nothing fixed)
+
+**Environment:** Python 3.14.7 in a fresh virtual environment with the versions pinned in `requirements.txt`: numpy 2.3.5, scipy 1.16.3, matplotlib 3.10.8, pytest 9.0.2 (the same numbers were obtained with numpy 2.5.3 / scipy 1.18.1; nothing below depends on the minor version).
+
+### 1.1 Running the script
+
+`python ai_generated_oscillator.py` **crashes before producing any output** — no energy levels are printed and no figure is drawn, because the `print` on line 23 comes *after* the wavefunction list comprehension on line 20, which raises on its very first call (`n = 0`). Exit code 1. Verbatim output:
+
+```
+Traceback (most recent call last):
+  File "ai_generated_oscillator.py", line 36, in <module>
+    main()
+  File "ai_generated_oscillator.py", line 20, in main
+    states = np.array([harmonic_state(n, x) for n in range(5)])
+  File "ai_generated_oscillator.py", line 13, in harmonic_state
+    herm = special.hermite_poly(n, x)  # BUG 3
+AttributeError: module 'scipy.special' has no attribute 'hermite_poly'. Did you mean: 'hermitenorm'?
+```
+
+Checking the `scipy.special` namespace directly:
+
+| name | exists in scipy 1.16.3? | note |
+|---|---|---|
+| `special.hermite_poly` | **no** | never existed in SciPy |
+| `special.eval_hermite(n, x)` | yes | physicists' $H_n(x)$ — the correct choice |
+| `special.hermite(n)` | yes | returns a `poly1d` for $H_n$ |
+| `special.hermitenorm`, `eval_hermitenorm` | yes | *probabilists'* $He_n(x)$ — the interpreter's suggestion, but the wrong polynomial family for the oscillator |
+
+### 1.2 Observed values, component by component
+
+Because the crash hides everything downstream, each function was exercised in isolation with **only** the missing API call substituted (`special.eval_hermite`); no other line was changed.
+
+**`energy_levels()` (line 9)**
+
+```
+returned:                     [0.  1.  2.  3.  4.]
+expected  ħω(n + ½), n=0..4:  [0.5 1.5 2.5 3.5 4.5]
+```
+
+Every level is low by exactly ½ ħω; the ground state comes out as **0**. The *spacing* is correct, which is why the numbers look plausible at a glance.
+
+**`harmonic_state()` normalization (line 14)** — Simpson's-rule integral of $\psi_n^2$ on $x\in[-5,5]$, 600 points, using the script's prefactor $1/\sqrt{n!}$:
+
+| n | $\int\psi_n^2\,dx$ (script) | should be | ratio | $2^n\sqrt{\pi}$ |
+|---|---|---|---|---|
+| 0 | 1.7725 | 1 | 1.7725 | 1.772 |
+| 1 | 3.5449 | 1 | 3.5449 | 3.545 |
+| 2 | 7.0898 | 1 | 7.0898 | 7.090 |
+| 3 | 14.1796 | 1 | 14.1796 | 14.180 |
+| 4 | 28.3593 | 1 | 28.3593 | 28.359 |
+
+No state is normalized, and the error is not a constant factor: it grows as $2^n$, matching the dropped $2^n\sqrt\pi$ to four figures.
+
+**`states = states[1:]` (line 21)** — `states.shape` goes from `(5, 600)` to `(4, 600)`: the ground state is discarded and only four curves would be plotted despite the stated purpose "first five".
+
+**`for n, psi in enumerate(states)` (line 26)** — because the array was sliced first, `enumerate` restarts at 0 and every legend label is off by one. Verified by counting nodes (sign changes) of each curve:
+
+```
+legend says n=0   curve is actually n=1   (1 node)
+legend says n=1   curve is actually n=2   (2 nodes)
+legend says n=2   curve is actually n=3   (3 nodes)
+legend says n=3   curve is actually n=4   (4 nodes)
+```
+
+**Plotted quantity vs. axis label (lines 26 & 29)** — the y-axis says "Probability density" but the array plotted is $\psi_n$ itself. $\psi_1$ dips to $-0.644$; $|\psi_1|^2$ has minimum $\approx 4\times10^{-10}\ge 0$, as a density must.
+
+### 1.3 Summary
+
+| # | Line | Observed | Visible without fixing anything? |
+|---|---|---|---|
+| 1 | 9 | $E_n=\hbar\omega n$, ground state = 0 | no — hidden behind the crash |
+| 2 | 21 | ground state discarded; 4 curves not 5 | no |
+| 3 | 13 | `AttributeError`: `hermite_poly` does not exist | **yes — this is the crash** |
+| 4 | 14 | $\int\psi^2dx = 2^n\sqrt\pi$ instead of 1 | no |
+| 5 | 26/29 | $\psi$ plotted but labelled as a probability density | no |
+
+Only **one** of the five problems announces itself. The other four run silently and produce a figure that *looks* like the textbook one (correct spacing, correct shapes) while being wrong in energy offset, normalization, state count, labelling, and plotted quantity.
+
+---
+
+## Part 2 — Structured bug report
+
+All equation numbers refer to Griffiths & Schroeter, *Introduction to Quantum Mechanics*, 3rd ed. (Cambridge, 2018), §2.3 unless stated otherwise.
+
+### Bug 1 – Missing zero-point energy
+
+**(a) Location:** `energy_levels`, line 9.
+
+**(b) Category:** wrong physics formula.
+
+**(c) What the AI produced and why it is wrong:** The AI wrote `hbar * omega * n`, which returns `[0, 1, 2, 3, 4]`. The oscillator's ground state cannot have zero energy: the uncertainty principle forbids a particle from being simultaneously at rest and localized at the bottom of the well, so the lowest level carries a zero-point energy of $\tfrac12\hbar\omega$ and every level is shifted up by that amount. The correct spectrum is `[0.5, 1.5, 2.5, 3.5, 4.5]`; the AI's is uniformly too low by half a quantum, while the (correct) spacing disguises the error.
+
+**(d) Correct code and citation:**
+
+```python
+return hbar * omega * (np.arange(n_levels) + 0.5)
+```
+
+Griffiths Eq. 2.62: $E_n = \left(n+\tfrac12\right)\hbar\omega$.
+
+### Bug 2 – Off-by-one in state selection
+
+**(a) Location:** `main`, line 21 (with its consequence on line 26).
+
+**(b) Category:** off-by-one error.
+
+**(c) What the AI produced and why it is wrong:** The AI wrote `states = states[1:]`, which removes the first element of an array that already held exactly the five states $n=0\ldots4$. The ground state is silently thrown away, four curves are plotted instead of five, and — because `enumerate` on line 26 restarts at 0 — every legend label is one less than the true quantum number (the curve labelled `n=0` has one node and is really $\psi_1$). The ground state is the most important curve: it is the only nodeless state and the one with the largest probability density at the centre of the well.
+
+**(d) Correct code and citation:**
+
+```python
+states = np.array([harmonic_state(n, x) for n in range(5)])   # no slice afterwards
+```
+
+Griffiths §2.3.2 and Fig. 2.7: the $n$-th stationary state has exactly $n$ nodes, so the nodeless curve must be present and labelled $n=0$.
+
+### Bug 3 – Hallucinated API function
+
+**(a) Location:** `harmonic_state`, line 13.
+
+**(b) Category:** hallucinated API.
+
+**(c) What the AI produced and why it is wrong:** The AI called `special.hermite_poly(n, x)`; no function of that name exists in `scipy.special`, so the call raises `AttributeError` on the first invocation and the script never produces a plot. The name is plausible-looking, which is exactly what makes it dangerous. A second trap lurks in the interpreter's suggestion `hermitenorm`: that is the *probabilists'* polynomial $He_n(x)=2^{-n/2}H_n(x/\sqrt2)$, which would run without error and produce wrongly shaped wavefunctions.
+
+**(d) Correct code and citation:**
+
+```python
+herm = special.eval_hermite(n, x)     # physicists' H_n(x)
+```
+
+SciPy defines `eval_hermite` as $H_n(x)=(-1)^n e^{x^2}\frac{d^n}{dx^n}e^{-x^2}$, the same polynomials tabulated in Griffiths Table 2.1 and used in Eq. 2.86.
+
+### Bug 4 – Incorrect normalization constant
+
+**(a) Location:** `harmonic_state`, line 14.
+
+**(b) Category:** incorrect normalization.
+
+**(c) What the AI produced and why it is wrong:** The AI used `norm = 1.0 / np.sqrt(math.factorial(n))`, omitting the $2^n$ and $\sqrt\pi$ factors under the square root. Normalization is what lets $|\psi_n|^2$ be read as a probability density with $\int|\psi_n|^2dx=1$; without those factors the total probability is $2^n\sqrt\pi$ — 1.77 for the ground state and 28.4 for $n=4$. Because the missing $2^n$ grows exponentially, any comparison of probability densities between states would be badly distorted.
+
+**(d) Correct code and citation:**
+
+```python
+norm = 1.0 / np.sqrt(2.0**n * math.factorial(n) * np.sqrt(np.pi))
+```
+
+Griffiths Eq. 2.86: $\psi_n(x)=\left(\frac{m\omega}{\pi\hbar}\right)^{1/4}\frac{1}{\sqrt{2^n n!}}H_n(\xi)\,e^{-\xi^2/2}$ with $\xi=\sqrt{m\omega/\hbar}\,x$. With $\hbar=m=\omega=1$ the prefactor is $\left(2^n n!\sqrt\pi\right)^{-1/2}$.
+
+### Bug 5 – Wrong output quantity
+
+**(a) Location:** `main`, lines 26 (what is plotted) and 29 (how the axis is labelled).
+
+**(b) Category:** wrong output quantity.
+
+**(c) What the AI produced and why it is wrong:** The y-axis is labelled "Probability density" but the code plots `psi`, the wavefunction, not $|\psi|^2$. The wavefunction is real here and changes sign $n$ times ($\psi_1$ reaches $-0.64$), whereas a probability density is non-negative by definition. The figure therefore shows "negative probabilities", and combined with Bug 2 every curve also carries the wrong quantum number. A reader would misinterpret both the quantity shown and which state is which.
+
+**(d) Correct code and citation:** either plot the density, or label the axis honestly. The fixed script keeps the wavefunctions and fixes the label:
+
+```python
+plt.plot(x, psi, label=f"n={n}")
+plt.ylabel(r"$\psi_n(x)$")                       # was: "Probability density"
+plt.title("Wavefunctions of the quantum harmonic oscillator")
+```
+
+(Plotting `psi**2` under the original label would be equally correct.) Griffiths Eq. 1.3 and §1.2: $|\Psi|^2$ is the probability density; $\Psi$ itself is not observable and may be negative.
